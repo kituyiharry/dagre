@@ -1,8 +1,8 @@
 [workspace]
 
 members = [
-    "dagger",
-    "dagger-graph",
-    "dagger-layout"
+    "dagre",
+    "dagre-graph",
+    "dagre-layout"
 ]
 

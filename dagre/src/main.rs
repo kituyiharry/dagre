@@ -1,6 +1,6 @@
 use std::{time::{Duration}, thread::sleep};
 
-use dagger_graph::{DaggerGraph, MakeGraph, NodeLike};
+use dagre_graph::{DaggerGraph, MakeGraph, NodeLike};
 
 #[derive(Debug)]
 pub struct UWrap(usize);
