@@ -209,6 +209,7 @@ pub trait MakeGraph<'a, I: Ord + Debug + Display + Hash> {
     fn get_by(&self, val: &WeakNode<'a, I>) -> Option<&Edges<'a, I>>;
     // Remove a node
     fn unlink(&mut self, node: &WeakNode<'a,I>);
+    fn get_by_mut(&mut self, val: &WeakNode<'a, I>) -> Option<&mut Edges<'a, I>>;
     // TODO: subgraph (vertex induced and shallow?)
     //fn induce(&self, nodes: Vec<StrongNode<'a, ...>>) -> Self;
 }
@@ -268,13 +269,43 @@ impl<'a, I: Ord + Debug + Display + Hash> MakeGraph<'a, I> for DaggerMapGraph<'a
         None
     }
 
+    fn get_by_mut(&mut self, val: &WeakNode<'a, I>) -> Option<&mut Edges<'a, I>> {
+        if let Some(presence) =  val.upgrade() {
+            if let Some(v) = self.get_mut(&presence) {
+                return Some(v)
+            }
+        }
+        None
+    }
+
     // TODO: Clear weak refs after unlinking a weak - hint: use 
     fn unlink(&mut self, node: &WeakNode<'a,I>) {
         if let Some(presence) =  node.upgrade() {
             if let Some(mut edges) = self.remove(&presence) {
+                let droplabel = presence.borrow().data.label();
+                drop(presence);
+
+                // ---- Remove from the outgoing of incoming nodes
+                edges.mut_incoming().iter_mut().for_each(|inc| {
+                    if let Some(outfiltered) = self.get_by_mut(inc) {
+                        outfiltered.mut_outgoing().retain(|o| {
+                            o.strong_count() != 0
+                        })
+                    }
+                });
+
+                // ---- Remove from the incoming of outgoing nodes
+                edges.mut_outgoing().iter_mut().for_each(|out| {
+                    if let Some(outfiltered) = self.get_by_mut(out) {
+                        outfiltered.mut_incoming().retain(|i| {
+                            i.strong_count() != 0
+                        })
+                    }
+                });
+
                 edges.mut_logs().write(
                     DagreEvent::Remove(
-                        presence.borrow().data.label().into()
+                        droplabel.into()
                     )
                 );
             }

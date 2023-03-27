@@ -51,7 +51,7 @@ fn main() {
     });
     println!("======================");
     graph.unlink(&n); //Self reference
-    graph.unlink(&j); //Self reference
+    //graph.unlink(&j); //Self reference
     println!("{:#?}", n.upgrade());
     graph.iter().for_each(|(k,v)| {
         println!("{:?} :: ({}, {})", k, v.incoming().len(), v.outgoing().len())
