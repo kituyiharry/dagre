@@ -47,7 +47,7 @@ pub trait NodeLike {
     // the graph will internally add Rc and RefCell to it
     fn unique(&self) -> Self::Unique;
     // Label for your Node data
-    fn label(&self) -> String;
+    fn label(&self) -> Box<[u8]>;
 }
 
 // Node
@@ -108,7 +108,11 @@ impl<I: Hash + Eq + Ord + Debug> Debug for Node<'_, I> {
 // Display
 impl<I: Hash + Eq + Ord + Debug> Display for Node<'_, I> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "< {} >", self.data.label())
+        unsafe {
+            let clstr = self.data.label();
+            let selfstr = std::str::from_utf8_unchecked(clstr.as_ref());
+            write!(f, "< {} >",  selfstr)
+        }
     }
 }
 
@@ -192,13 +196,35 @@ impl<'a, I: Ord + Hash + Eq + Debug> Edges<'a,I> {
         self.1.push(Weak::clone(val))
     }
 
+    // Remove a node val 
+    pub fn invalidate_from(mut self, graph: &mut impl MakeGraph<'a, I>, labelremoved: Box<[u8]>) {
+        // ---- Remove from the outgoing of incoming nodes
+        self.mut_incoming().iter_mut().for_each(|inc| {
+            if let Some(infiltered) = graph.get_by_mut(inc) {
+                infiltered.mut_logs().write(DagreEvent::Remove(Cow::Borrowed(labelremoved.as_ref())));
+                infiltered.mut_outgoing().retain(|o| {
+                    o.strong_count() != 0
+                })
+            }
+        });
+        // ---- Remove from the incoming of outgoing nodes
+        self.mut_outgoing().iter_mut().for_each(|out| {
+            if let Some(outfiltered) = graph.get_by_mut(out) {
+                outfiltered.mut_logs().write(DagreEvent::Remove(Cow::Borrowed(labelremoved.as_ref())));
+                outfiltered.mut_incoming().retain(|i| {
+                    i.strong_count() != 0
+                })
+            }
+        });
+    }
+
 }
 
 // Type alias for our Graph based on BTreeMap
 pub type DaggerMapGraph<'a,I> = BTreeMap<StrongNode<'a,I>, Edges<'a,I>>;
 
 // MakeGraph interface for defining some graph operations
-pub trait MakeGraph<'a, I: Ord + Debug + Display + Hash> {
+pub trait MakeGraph<'a, I: Ord + Debug + Hash> {
     // node adds a new member into the graph definition
     fn node(&mut self, val: impl NodeLike<Unique=I> + 'a) -> WeakNode<'a,I>;
     // edge adds a connection from one node to another if available - or does nothing otherwise
@@ -209,6 +235,7 @@ pub trait MakeGraph<'a, I: Ord + Debug + Display + Hash> {
     fn get_by(&self, val: &WeakNode<'a, I>) -> Option<&Edges<'a, I>>;
     // Remove a node
     fn unlink(&mut self, node: &WeakNode<'a,I>);
+    // get edges mutably
     fn get_by_mut(&mut self, val: &WeakNode<'a, I>) -> Option<&mut Edges<'a, I>>;
     // TODO: subgraph (vertex induced and shallow?)
     //fn induce(&self, nodes: Vec<StrongNode<'a, ...>>) -> Self;
@@ -227,7 +254,7 @@ impl<'a, I: Ord + Debug + Display + Hash> MakeGraph<'a, I> for DaggerMapGraph<'a
         }
         let ret_node = make_shared(&new_node);
         let edges = self.entry(new_node).or_insert_with(Edges::new);
-        edges.mut_logs().write(DagreEvent::Add(lab.into()));
+        edges.mut_logs().write(DagreEvent::Add(Cow::Borrowed(lab.as_ref())));
         ret_node
     }
 
@@ -239,13 +266,13 @@ impl<'a, I: Ord + Debug + Display + Hash> MakeGraph<'a, I> for DaggerMapGraph<'a
                     let lab = topresence.borrow().data.label();
                     // add destination to origin
                     edgefrom.add_to_outgoing(destination);
-                    edgefrom.mut_logs().write(DagreEvent::To(lab.into()));
+                    edgefrom.mut_logs().write(DagreEvent::To(Cow::Borrowed(lab.as_ref())));
                 }
                 if let Some(edgeto) = self.get_mut(&topresence) {
                     let lab = frompresence.borrow().data.label();
                     // add origin to incoming edge of destination
                     edgeto.add_to_incoming(origin);
-                    edgeto.mut_logs().write(DagreEvent::From(lab.into()));
+                    edgeto.mut_logs().write(DagreEvent::From(Cow::Borrowed(lab.as_ref())));
                 }
                 // TODO: Check if succeeded
             }
@@ -281,33 +308,11 @@ impl<'a, I: Ord + Debug + Display + Hash> MakeGraph<'a, I> for DaggerMapGraph<'a
     // TODO: Clear weak refs after unlinking a weak - hint: use 
     fn unlink(&mut self, node: &WeakNode<'a,I>) {
         if let Some(presence) =  node.upgrade() {
-            if let Some(mut edges) = self.remove(&presence) {
-                let droplabel = presence.borrow().data.label();
+            if let Some(edges) = self.remove(&presence) {
+                let label = presence.borrow().data.label();
+                // Invalidate weak references to this node
                 drop(presence);
-
-                // ---- Remove from the outgoing of incoming nodes
-                edges.mut_incoming().iter_mut().for_each(|inc| {
-                    if let Some(outfiltered) = self.get_by_mut(inc) {
-                        outfiltered.mut_outgoing().retain(|o| {
-                            o.strong_count() != 0
-                        })
-                    }
-                });
-
-                // ---- Remove from the incoming of outgoing nodes
-                edges.mut_outgoing().iter_mut().for_each(|out| {
-                    if let Some(outfiltered) = self.get_by_mut(out) {
-                        outfiltered.mut_incoming().retain(|i| {
-                            i.strong_count() != 0
-                        })
-                    }
-                });
-
-                edges.mut_logs().write(
-                    DagreEvent::Remove(
-                        droplabel.into()
-                    )
-                );
+                edges.invalidate_from(self, label);
             }
         }
     }
@@ -320,27 +325,29 @@ impl<'a, I: Ord + Debug + Display + Hash> MakeGraph<'a, I> for DaggerMapGraph<'a
 
 // DagreEvent 
 pub enum DagreEvent<'a> {
-    Add(Cow<'a, str>),
-    From(Cow<'a, str>),
-    To(Cow<'a, str>),
-    Remove(Cow<'a, str>)
+    Add(Cow<'a, [u8]>),
+    From(Cow<'a, [u8]>),
+    To(Cow<'a, [u8]>),
+    Remove(Cow<'a, [u8]>)
 }
 
 impl<'a> ToString for DagreEvent<'a> {
     fn to_string(&self) -> String {
-        match self {
-            DagreEvent::Add(addition) => {
-                String::from(format!("[+]   {}\n", addition.as_ref()))
-            },
-            DagreEvent::From(from) => {
-                String::from(format!("{} -> *\n",from.as_ref()))
-            },
-            DagreEvent::To(to) => {
-                String::from(format!("*  -> {}\n",to.as_ref()))
-            },
-            DagreEvent::Remove(subtracted) => {
-                String::from(format!("[-]   {}\n", subtracted.as_ref()))
-            },
+        unsafe {
+            match self {
+                DagreEvent::Add(addition) => {
+                    String::from(format!("[+]   {}\n", std::str::from_utf8_unchecked(addition.as_ref())))
+                },
+                DagreEvent::From(from) => {
+                    String::from(format!("{} -> *\n", std::str::from_utf8_unchecked(from.as_ref())))
+                },
+                DagreEvent::To(to) => {
+                    String::from(format!("*  -> {}\n", std::str::from_utf8_unchecked(to.as_ref())))
+                },
+                DagreEvent::Remove(subtracted) => {
+                    String::from(format!("[-]   {}\n", std::str::from_utf8_unchecked(subtracted.as_ref())))
+                },
+            }
         }
     }
 }
@@ -351,7 +358,7 @@ pub trait EventLogWriter {
 
 #[derive(Debug)]
 pub struct DagreRingLog<'a, const BUFSIZE: usize> {
-    pub log_buf: VecDeque<Cow<'a, str>>
+    pub log_buf: VecDeque<Cow<'a, [u8]>>
 }
 
 impl<'a, const BUFSIZE:usize> Default for DagreRingLog<'a, BUFSIZE> {
@@ -372,7 +379,7 @@ impl<'a, const BUFSIZE: usize> DagreRingLog<'a, BUFSIZE> {
     pub fn dumps(&self, writeloc: impl Write) -> io::Result<()> {
         let mut bufw = BufWriter::new(writeloc);
         self.log_buf.iter().rev().for_each(|log| {
-            if let Ok(_num) = bufw.write(log.as_ref().as_bytes()) {};
+            if let Ok(_num) = bufw.write(log.as_ref()) {};
         });
         bufw.flush()
     }
@@ -380,12 +387,84 @@ impl<'a, const BUFSIZE: usize> DagreRingLog<'a, BUFSIZE> {
 
 impl<const BUFSIZE: usize> EventLogWriter for DagreRingLog<'_, BUFSIZE> {
     fn write(&mut self, event: DagreEvent) {
-        self.log_buf.push_front(event.to_string().into())
+        self.log_buf.push_front(
+           Cow::Owned(
+                (event.to_string()).as_bytes().to_vec()
+            )
+        )
     }
 }
 
 pub struct NopEventLogWriter();
 
+
+
 impl EventLogWriter for NopEventLogWriter {
     fn write(&mut self, _: DagreEvent) {}
+}
+
+#[cfg(test)]
+mod tests {
+
+    use crate::NodeLike;
+
+    ////////////////////////////////
+    //  New graph implementation  //
+    ////////////////////////////////
+    
+    use super::{MakeGraph, DaggerMapGraph};
+
+    pub struct TestNode(usize);
+
+    impl NodeLike for TestNode {
+        type Unique = usize;
+
+        fn unique(&self) -> Self::Unique {
+            self.0
+        }
+
+        fn label(&self) -> Box<[u8]> {
+            self.0.to_string().into_boxed_str().into_boxed_bytes()
+        }
+    }
+
+    #[test]
+    fn graph_node_added() {
+        let mut graph = DaggerMapGraph::new();
+        graph.node(TestNode(20));
+        graph.node(TestNode(30));
+        assert_eq!(graph.len(), 2);
+    }
+
+    #[test]
+    fn graph_edge_added() {
+        let mut graph = DaggerMapGraph::new();
+        let i = graph.node(TestNode(20));
+        let j = graph.node(TestNode(30));
+        graph.edge(&i,&j);
+        graph.edge(&j,&i);
+        let b = graph.get_by(&i).unwrap();
+        let q = graph.get_by(&j).unwrap();
+        assert_eq!(b.incoming().len(), 1);
+        assert_eq!(b.outgoing().len(), 1);
+        assert_eq!(q.incoming().len(), 1);
+        assert_eq!(q.outgoing().len(), 1);
+    }
+
+    #[test]
+    fn graph_edge_removed() {
+        let mut graph = DaggerMapGraph::new();
+        let i = graph.node(TestNode(20));
+        let j = graph.node(TestNode(30));
+        graph.edge(&i,&j);
+        graph.edge(&j,&i);
+        graph.unlink(&i);
+        let b = graph.get_by(&i);
+        let q = graph.get_by(&j).unwrap();
+        assert!(b.is_none());
+        assert_eq!(graph.len(), 1);
+        assert_eq!(q.incoming().len(), 0);
+    }
+
+
 }
