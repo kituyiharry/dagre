@@ -1,4 +1,4 @@
-use dagre_graph::{DaggerMapGraph, MakeGraph, NodeLike};
+use dagre_graph::{DaggerMapGraph, DagreProtocol, NodeLike};
 
 #[derive(Debug)]
 pub struct UWrap(usize);
@@ -38,7 +38,7 @@ fn main() {
         println!("{:?} :: ({}, {})", k, v.incoming().len(), v.outgoing().len())
     });
     println!("======================");
-    graph.unlink(&n); //Self reference
+    graph.evict(&n); //Self reference
     //graph.unlink(&j); //Self reference
     println!("{:#?}", n.upgrade());
     graph.iter().for_each(|(k,v)| {
@@ -47,6 +47,6 @@ fn main() {
         v.logs().dumps(std::io::stdout());
         println!("------------------");
     });
-    graph.unlink(&n);
+    graph.evict(&n);
     graph.node(UWrap(10));
 }

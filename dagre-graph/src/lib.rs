@@ -54,9 +54,26 @@ pub trait NodeLike {
 // why 'a:
 // references: https://users.rust-lang.org/t/why-this-impl-type-lifetime-may-not-live-long-enough/67855/2
 // Internal way of holding your supplied node as a Graph
-pub struct Node<'a, I> where I: Eq + Hash + Ord + Debug {
+pub struct DagreNode<'a, I> where I: Eq + Hash + Ord + Debug {
     // Your data wrapped for the graph
     pub data: Box<dyn NodeLike<Unique=I> + 'a>,
+    // TODO: Some other tracking metadata
+}
+
+impl<I: Hash + Eq + Debug + Ord> PartialOrd for Box<dyn NodeLike<Unique=I>> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.unique().partial_cmp(&other.unique())
+    }
+}
+
+impl<I: Hash + Eq + Debug + Ord> PartialEq for Box<dyn NodeLike<Unique=I>> {
+    fn eq(&self, other: &Self) -> bool {
+        self.unique().eq(&other.unique())
+    }
+}
+
+impl<I: Hash + Eq + Debug + Ord> Eq for Box<dyn NodeLike<Unique=I>> {
+    fn assert_receiver_is_total_eq(&self) {}
 }
 
 ////////////////////////////////////////////////////////
@@ -66,47 +83,47 @@ pub struct Node<'a, I> where I: Eq + Hash + Ord + Debug {
 ////////////////////////////////////////////////////////
 
 // Hash
-impl<I: Eq + Hash + Ord + Debug> Hash for Node<'_, I> {
+impl<I: Eq + Hash + Ord + Debug> Hash for DagreNode<'_, I> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.data.unique().hash(state)
     }
 }
 
 // PartialEq
-impl<I: Eq + Hash + Ord + Debug> PartialEq for Node<'_,I> {
+impl<I: Eq + Hash + Ord + Debug> PartialEq for DagreNode<'_,I> {
     fn eq(&self, other: &Self) -> bool {
         self.data.unique().eq(&other.data.unique())
     }
 }
 
 // Eq
-impl<I: Eq + Hash + Ord + Debug> Eq for Node<'_,I> {
+impl<I: Eq + Hash + Ord + Debug> Eq for DagreNode<'_,I> {
     fn assert_receiver_is_total_eq(&self) {}
 }
 
 // PartialOrd
-impl<I: Hash + Eq + Ord + Debug> PartialOrd for Node<'_,I> {
+impl<I: Hash + Eq + Ord + Debug> PartialOrd for DagreNode<'_,I> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         self.data.unique().partial_cmp(&other.data.unique())
     }
 }
 
 // Ord
-impl<I: Hash + Eq + Ord + Debug> Ord for Node<'_,I> {
+impl<I: Hash + Eq + Ord + Debug> Ord for DagreNode<'_,I> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.data.unique().cmp(&other.data.unique())
     }
 }
 
 // Debug
-impl<I: Hash + Eq + Ord + Debug> Debug for Node<'_, I> {
+impl<I: Hash + Eq + Ord + Debug> Debug for DagreNode<'_, I> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "<< {:?} >>", self.data.unique())
     }
 }
 
 // Display
-impl<I: Hash + Eq + Ord + Debug> Display for Node<'_, I> {
+impl<I: Hash + Eq + Ord + Debug> Display for DagreNode<'_, I> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         unsafe {
             let clstr = self.data.label();
@@ -117,10 +134,10 @@ impl<I: Hash + Eq + Ord + Debug> Display for Node<'_, I> {
 }
 
 // Impl Node
-impl<'a, I: Hash + Eq + Ord + Debug> Node<'a, I> {
+impl<'a, I: Hash + Eq + Ord + Debug> DagreNode<'a, I> {
     // Create a new graph node from your trait implementation
     pub fn create(subject: impl NodeLike<Unique=I> + 'a) -> Self {
-        Node {
+        DagreNode {
             data: Box::new(subject)
         }
     }
@@ -128,16 +145,16 @@ impl<'a, I: Hash + Eq + Ord + Debug> Node<'a, I> {
 
 
 // EdgeSet is a unique collection T nodes in an edge for a given node in the graph
-pub type EdgeSet<'a,I> = Vec<WkRef<Node<'a,I>>>;
+pub type EdgeSet<'a,I> = Vec<WkRef<DagreNode<'a,I>>>;
 
 // // Incoming and Outgoing edges
 #[derive(Debug, Default)]
 pub struct Edges<'a,I: Hash + Ord + Eq + Debug>(EdgeSet<'a,I>, EdgeSet<'a,I>, DagreRingLog<'a, 20>);
 
 // Type aliases for weak references to refcells of nodes
-type WeakNode<'a, I>  = Weak<RefCell<Node<'a,I>>>;
+type WeakNode<'a, I>  = Weak<RefCell<DagreNode<'a,I>>>;
 // Type aliases for strong references to refcells of nodes
-type StrongNode<'a,I> = Rc<RefCell<Node<'a,I>>>;
+type StrongNode<'a,I> = Rc<RefCell<DagreNode<'a,I>>>;
 
 // Type aliases for weak and strong nodes
 impl<'a, I: Ord + Hash + Eq + Debug> Edges<'a,I> {
@@ -197,7 +214,7 @@ impl<'a, I: Ord + Hash + Eq + Debug> Edges<'a,I> {
     }
 
     // Remove a node val 
-    pub fn invalidate_from(mut self, graph: &mut impl MakeGraph<'a, I>, labelremoved: Box<[u8]>) {
+    pub fn invalidate_from(mut self, graph: &mut impl DagreProtocol<'a, I>, labelremoved: Box<[u8]>) {
         // ---- Remove from the outgoing of incoming nodes
         self.mut_incoming().iter_mut().for_each(|inc| {
             if let Some(infiltered) = graph.get_by_mut(inc) {
@@ -224,7 +241,7 @@ impl<'a, I: Ord + Hash + Eq + Debug> Edges<'a,I> {
 pub type DaggerMapGraph<'a,I> = BTreeMap<StrongNode<'a,I>, Edges<'a,I>>;
 
 // MakeGraph interface for defining some graph operations
-pub trait MakeGraph<'a, I: Ord + Debug + Hash> {
+pub trait DagreProtocol<'a, I: Ord + Debug + Hash> {
     // node adds a new member into the graph definition
     fn node(&mut self, val: impl NodeLike<Unique=I> + 'a) -> WeakNode<'a,I>;
     // edge adds a connection from one node to another if available - or does nothing otherwise
@@ -234,20 +251,21 @@ pub trait MakeGraph<'a, I: Ord + Debug + Hash> {
     // Find by reference (useful if Weak pointer available)
     fn get_by(&self, val: &WeakNode<'a, I>) -> Option<&Edges<'a, I>>;
     // Remove a node
-    fn unlink(&mut self, node: &WeakNode<'a,I>);
+    fn evict(&mut self, node: &WeakNode<'a,I>);
     // get edges mutably
     fn get_by_mut(&mut self, val: &WeakNode<'a, I>) -> Option<&mut Edges<'a, I>>;
-    // TODO: subgraph (vertex induced and shallow?)
+    // edge deletion
+    fn unlink(&mut self, from: &WeakNode<'a,I>, to: &WeakNode<'a,I>);
     //fn induce(&self, nodes: Vec<StrongNode<'a, ...>>) -> Self;
 }
 
-impl<'a, I: Ord + Debug + Display + Hash> MakeGraph<'a, I> for DaggerMapGraph<'a, I> {
+impl<'a, I: Ord + Debug + Display + Hash> DagreProtocol<'a, I> for DaggerMapGraph<'a, I> {
 
     // TODO: "tag" the weak references returned with something unique to this graph! so not just
     // any weak ref can be added if it doesn't exist
     fn node(&mut self, data: impl NodeLike<Unique = I> + 'a) -> WeakNode<'a, I> {
         let lab = data.label();
-        let new_node = make_owned(Node::create(data));
+        let new_node = make_owned(DagreNode::create(data));
         // Check if already exists
         if let Some((k,_)) = self.get_key_value(&new_node) {
             return Rc::downgrade(k)
@@ -280,7 +298,7 @@ impl<'a, I: Ord + Debug + Display + Hash> MakeGraph<'a, I> for DaggerMapGraph<'a
     }
 
     fn find(&self, val: impl NodeLike<Unique=I> + 'a) -> Option<(WeakNode<'a,I>, &Edges<'a, I>)> {
-        let fnode = make_owned(Node::create(val));
+        let fnode = make_owned(DagreNode::create(val));
         if let Some((k, v)) = self.get_key_value(&fnode) {
             return Some((make_shared(k), v))
         }
@@ -306,13 +324,39 @@ impl<'a, I: Ord + Debug + Display + Hash> MakeGraph<'a, I> for DaggerMapGraph<'a
     }
 
     // TODO: Clear weak refs after unlinking a weak - hint: use 
-    fn unlink(&mut self, node: &WeakNode<'a,I>) {
+    fn evict(&mut self, node: &WeakNode<'a,I>) {
         if let Some(presence) =  node.upgrade() {
             if let Some(edges) = self.remove(&presence) {
                 let label = presence.borrow().data.label();
                 // Invalidate weak references to this node
                 drop(presence);
                 edges.invalidate_from(self, label);
+            }
+        }
+    }
+
+    // TODO: Clear weak refs after unlinking a weak - hint: use 
+    fn unlink(&mut self, from: &WeakNode<'a,I>, to: &WeakNode<'a,I>) {
+        if let (Some(fromp), Some(top)) =  (from.upgrade(), to.upgrade()) {
+            if let Some(edges) = self.get_by_mut(&from) {
+                if let Some(pos) = edges.mut_outgoing().iter().position(|o| {
+                    if let Some(up) = o.upgrade() {
+                        return top.borrow().eq(&up.borrow())
+                    }
+                    false
+                }) {
+                    edges.mut_outgoing().remove(pos);
+                }
+            }
+            if let Some(edges) = self.get_by_mut(&to) {
+                if let Some(pos) = edges.mut_incoming().iter().position(|o| {
+                    if let Some(up) = o.upgrade() {
+                        return fromp.borrow().eq(&up.borrow())
+                    }
+                    false
+                }) {
+                    edges.mut_incoming().remove(pos);
+                }
             }
         }
     }
@@ -412,7 +456,7 @@ mod tests {
     //  New graph implementation  //
     ////////////////////////////////
     
-    use super::{MakeGraph, DaggerMapGraph};
+    use super::{DagreProtocol, DaggerMapGraph};
 
     pub struct TestNode(usize);
 
@@ -452,18 +496,36 @@ mod tests {
     }
 
     #[test]
+    fn graph_node_removed() {
+        let mut graph = DaggerMapGraph::new();
+        let i = graph.node(TestNode(20));
+        let j = graph.node(TestNode(30));
+        graph.edge(&i,&j);
+        graph.edge(&j,&i);
+        graph.evict(&i);
+        let b = graph.get_by(&i);
+        let q = graph.get_by(&j).unwrap();
+        assert!(b.is_none());
+        assert_eq!(graph.len(), 1);
+        assert_eq!(q.incoming().len(), 0);
+    }
+
+    #[test]
     fn graph_edge_removed() {
         let mut graph = DaggerMapGraph::new();
         let i = graph.node(TestNode(20));
         let j = graph.node(TestNode(30));
         graph.edge(&i,&j);
         graph.edge(&j,&i);
-        graph.unlink(&i);
-        let b = graph.get_by(&i);
+        graph.unlink(&i,&j);
+        graph.unlink(&j,&i);
+        let b = graph.get_by(&i).unwrap();
         let q = graph.get_by(&j).unwrap();
-        assert!(b.is_none());
-        assert_eq!(graph.len(), 1);
+        assert_eq!(graph.len(), 2);
         assert_eq!(q.incoming().len(), 0);
+        assert_eq!(q.outgoing().len(), 0);
+        assert_eq!(b.incoming().len(), 0);
+        assert_eq!(b.outgoing().len(), 0);
     }
 
 
