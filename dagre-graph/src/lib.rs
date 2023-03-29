@@ -245,7 +245,9 @@ pub trait DagreProtocol<'a, I: Ord + Debug + Hash> {
     // node adds a new member into the graph definition
     fn node(&mut self, val: impl NodeLike<Unique=I> + 'a) -> WeakNode<'a,I>;
     // edge adds a connection from one node to another if available - or does nothing otherwise
-    fn edge(&mut self, valfrom: &WeakNode<'a,I>, valto: &WeakNode<'a,I>);
+    fn unidirectional(&mut self, valfrom: &WeakNode<'a,I>, valto: &WeakNode<'a,I>);
+    // edge adds a connection from one node to another if available - or does nothing otherwise
+    fn bidirectional(&mut self, valfrom: &WeakNode<'a,I>, valto: &WeakNode<'a,I>);
     // Find by value (useful when reference isn't available)
     fn find(&self, val: impl NodeLike<Unique=I> + 'a) -> Option<(WeakNode<'a,I>, &Edges<'a, I>)>;
     // Find by reference (useful if Weak pointer available)
@@ -276,25 +278,46 @@ impl<'a, I: Ord + Debug + Display + Hash> DagreProtocol<'a, I> for DaggerMapGrap
         ret_node
     }
 
-    // TODO: make less reliant on weakrefs and directly use impl NodeLike
-    fn edge(&mut self, origin: &WeakNode<'a,I>, destination: &WeakNode<'a,I>) {
-        // valfrom ---> valto
-            if let (Some(frompresence), Some(topresence)) = (origin.upgrade(), destination.upgrade()) {
-                if let Some(edgefrom) = self.get_mut(&frompresence) {
-                    let lab = topresence.borrow().data.label();
-                    // add destination to origin
-                    edgefrom.add_to_outgoing(destination);
-                    edgefrom.mut_logs().write(DagreEvent::To(Cow::Borrowed(lab.as_ref())));
-                }
-                if let Some(edgeto) = self.get_mut(&topresence) {
-                    let lab = frompresence.borrow().data.label();
-                    // add origin to incoming edge of destination
-                    edgeto.add_to_incoming(origin);
-                    edgeto.mut_logs().write(DagreEvent::From(Cow::Borrowed(lab.as_ref())));
-                }
-                // TODO: Check if succeeded
+    fn unidirectional(&mut self, origin: &WeakNode<'a,I>, destination: &WeakNode<'a,I>) {
+        if let (Some(frompresence), Some(topresence)) = (origin.upgrade(), destination.upgrade()) {
+            if let Some(edgefrom) = self.get_mut(&frompresence) {
+                let lab = topresence.borrow().data.label();
+                // add destination to origin
+                edgefrom.add_to_outgoing(destination);
+                edgefrom.mut_logs().write(DagreEvent::To(Cow::Borrowed(lab.as_ref())));
             }
-        // Can't find anything so don't do anything
+            if let Some(edgeto) = self.get_mut(&topresence) {
+                let lab = frompresence.borrow().data.label();
+                // add origin to incoming edge of destination
+                edgeto.add_to_incoming(origin);
+                edgeto.mut_logs().write(DagreEvent::From(Cow::Borrowed(lab.as_ref())));
+            }
+            // TODO: Check if succeeded
+        }
+    }
+
+    fn bidirectional(&mut self, origin: &WeakNode<'a,I>, destination: &WeakNode<'a,I>) {
+        if let (Some(frompresence), Some(topresence)) = (origin.upgrade(), destination.upgrade()) {
+            if let Some(edgefrom) = self.get_mut(&frompresence) {
+                let lab = topresence.borrow().data.label();
+                let flab = frompresence.borrow().data.label();
+                // add destination to origin
+                edgefrom.add_to_outgoing(destination);
+                edgefrom.add_to_incoming(destination);
+                edgefrom.mut_logs().write(DagreEvent::To(Cow::Borrowed(lab.as_ref())));
+                edgefrom.mut_logs().write(DagreEvent::From(Cow::Borrowed(flab.as_ref())));
+            }
+            if let Some(edgeto) = self.get_mut(&topresence) {
+                let lab = frompresence.borrow().data.label();
+                let tlab = frompresence.borrow().data.label();
+                // add origin to incoming edge of destination
+                edgeto.add_to_incoming(origin);
+                edgeto.add_to_outgoing(origin);
+                edgeto.mut_logs().write(DagreEvent::From(Cow::Borrowed(lab.as_ref())));
+                edgeto.mut_logs().write(DagreEvent::To(Cow::Borrowed(tlab.as_ref())));
+            }
+            // TODO: Check if succeeded
+        }
     }
 
     fn find(&self, val: impl NodeLike<Unique=I> + 'a) -> Option<(WeakNode<'a,I>, &Edges<'a, I>)> {
@@ -372,7 +395,9 @@ pub enum DagreEvent<'a> {
     Add(Cow<'a, [u8]>),
     From(Cow<'a, [u8]>),
     To(Cow<'a, [u8]>),
-    Remove(Cow<'a, [u8]>)
+    Remove(Cow<'a, [u8]>),
+    UnlinkInc(Cow<'a, [u8]>),
+    UnlinkOut(Cow<'a, [u8]>),
 }
 
 impl<'a> ToString for DagreEvent<'a> {
@@ -390,6 +415,12 @@ impl<'a> ToString for DagreEvent<'a> {
                 },
                 DagreEvent::Remove(subtracted) => {
                     String::from(format!("[-]   {}\n", std::str::from_utf8_unchecked(subtracted.as_ref())))
+                },
+                DagreEvent::UnlinkInc(other) => {
+                    String::from(format!("* -/-> {}\n", std::str::from_utf8_unchecked(other.as_ref())))
+                },
+                DagreEvent::UnlinkOut(other) => {
+                    String::from(format!("{} -/-> *\n", std::str::from_utf8_unchecked(other.as_ref())))
                 },
             }
         }
@@ -420,8 +451,8 @@ impl<'a, const BUFSIZE: usize> DagreRingLog<'a, BUFSIZE> {
         }
     }
 
-    pub fn dumps(&self, writeloc: impl Write) -> io::Result<()> {
-        let mut bufw = BufWriter::new(writeloc);
+    pub fn dumps(&self, writer: impl Write) -> io::Result<()> {
+        let mut bufw = BufWriter::new(writer);
         self.log_buf.iter().rev().for_each(|log| {
             if let Ok(_num) = bufw.write(log.as_ref()) {};
         });
@@ -485,8 +516,8 @@ mod tests {
         let mut graph = DaggerMapGraph::new();
         let i = graph.node(TestNode(20));
         let j = graph.node(TestNode(30));
-        graph.edge(&i,&j);
-        graph.edge(&j,&i);
+        graph.unidirectional(&i,&j);
+        graph.unidirectional(&j,&i);
         let b = graph.get_by(&i).unwrap();
         let q = graph.get_by(&j).unwrap();
         assert_eq!(b.incoming().len(), 1);
@@ -500,8 +531,8 @@ mod tests {
         let mut graph = DaggerMapGraph::new();
         let i = graph.node(TestNode(20));
         let j = graph.node(TestNode(30));
-        graph.edge(&i,&j);
-        graph.edge(&j,&i);
+        graph.unidirectional(&i,&j);
+        graph.unidirectional(&j,&i);
         graph.evict(&i);
         let b = graph.get_by(&i);
         let q = graph.get_by(&j).unwrap();
@@ -515,8 +546,8 @@ mod tests {
         let mut graph = DaggerMapGraph::new();
         let i = graph.node(TestNode(20));
         let j = graph.node(TestNode(30));
-        graph.edge(&i,&j);
-        graph.edge(&j,&i);
+        graph.unidirectional(&i,&j);
+        graph.unidirectional(&j,&i);
         graph.unlink(&i,&j);
         graph.unlink(&j,&i);
         let b = graph.get_by(&i).unwrap();
@@ -526,6 +557,37 @@ mod tests {
         assert_eq!(q.outgoing().len(), 0);
         assert_eq!(b.incoming().len(), 0);
         assert_eq!(b.outgoing().len(), 0);
+    }
+
+    #[test]
+    fn graph_directionality() {
+        let mut graph = DaggerMapGraph::new();
+        let i = graph.node(TestNode(20));
+        let j = graph.node(TestNode(30));
+        // ---
+        let k = graph.node(TestNode(40));
+        let l = graph.node(TestNode(50));
+        // Introduce scope to handle double mut with immut
+        {
+            graph.unidirectional(&i,&j);
+            let b = graph.get_by(&i).unwrap();
+            let q = graph.get_by(&j).unwrap();
+            assert_eq!(q.incoming().len(), 1);
+            assert_eq!(q.outgoing().len(), 0);
+            assert_eq!(b.incoming().len(), 0);
+            assert_eq!(b.outgoing().len(), 1);
+        }
+        {
+            graph.bidirectional(&k, &l);
+            let m = graph.get_by(&k).unwrap();
+            let n = graph.get_by(&l).unwrap();
+            assert_eq!(m.incoming().len(), 1);
+            assert_eq!(m.outgoing().len(), 1);
+            assert_eq!(n.incoming().len(), 1);
+            assert_eq!(n.outgoing().len(), 1);
+        }
+        // everything should be there still
+        assert_eq!(graph.len(), 4);
     }
 
 

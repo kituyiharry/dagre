@@ -25,12 +25,12 @@ fn main() {
     let q = graph.node(UWrap(30));
     let p = graph.node(UWrap(40)); // Already inserted so
     // p and x should be the same thing!!
-    graph.edge(&n, &j);
-    graph.edge(&p, &j);
-    graph.edge(&q, &j);
-    graph.edge(&n, &q);
-    graph.edge(&n, &p);
-    graph.edge(&n, &n); //Self reference
+    graph.unidirectional(&n, &j);
+    graph.unidirectional(&p, &j);
+    graph.unidirectional(&q, &j);
+    graph.unidirectional(&n, &q);
+    graph.unidirectional(&n, &p);
+    graph.unidirectional(&n, &n); //Self reference
     //
     println!("{}", graph.len());
     println!("======================");
@@ -48,5 +48,4 @@ fn main() {
         println!("------------------");
     });
     graph.evict(&n);
-    graph.node(UWrap(10));
 }
