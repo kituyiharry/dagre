@@ -58,6 +58,7 @@ pub struct DagreNode<'a, I> where I: Eq + Hash + Ord + Debug {
     // Your data wrapped for the graph
     pub data: Box<dyn NodeLike<Unique=I> + 'a>,
     // TODO: Some other tracking metadata
+    // Add node encodings that can be passed to a layout or renderer thing
 }
 
 impl<I: Hash + Eq + Debug + Ord> PartialOrd for Box<dyn NodeLike<Unique=I>> {
@@ -368,7 +369,9 @@ impl<'a, I: Ord + Debug + Display + Hash> DagreProtocol<'a, I> for DaggerMapGrap
                     }
                     false
                 }) {
+                    let lab = top.borrow().data.label();
                     edges.mut_outgoing().remove(pos);
+                    edges.mut_logs().write(DagreEvent::UnlinkOut(Cow::Borrowed(lab.as_ref())))
                 }
             }
             if let Some(edges) = self.get_by_mut(&to) {
@@ -378,7 +381,9 @@ impl<'a, I: Ord + Debug + Display + Hash> DagreProtocol<'a, I> for DaggerMapGrap
                     }
                     false
                 }) {
+                    let lab = fromp.borrow().data.label();
                     edges.mut_incoming().remove(pos);
+                    edges.mut_logs().write(DagreEvent::UnlinkInc(Cow::Borrowed(lab.as_ref())))
                 }
             }
         }
@@ -471,8 +476,6 @@ impl<const BUFSIZE: usize> EventLogWriter for DagreRingLog<'_, BUFSIZE> {
 }
 
 pub struct NopEventLogWriter();
-
-
 
 impl EventLogWriter for NopEventLogWriter {
     fn write(&mut self, _: DagreEvent) {}
