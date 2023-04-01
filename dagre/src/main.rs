@@ -1,9 +1,9 @@
-use dagre_graph::{DaggerMapGraph, DagreProtocol, NodeLike};
+use dagre_graph::{DaggerMapGraph, DagreProtocol, DagreLike};
 
 #[derive(Debug)]
 pub struct UWrap(usize);
 
-impl NodeLike for UWrap {
+impl DagreLike for UWrap {
 
     type Unique = usize;
 

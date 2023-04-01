@@ -9,7 +9,7 @@
 //                          //
 //////////////////////////////
 
-use std::{rc::{Rc, Weak}, hash::Hash, cell::RefCell, io};
+use std::{rc::{Rc, Weak}, hash::Hash, cell::RefCell, io, clone};
 use std::fmt::{Debug, Display};
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
@@ -40,7 +40,7 @@ fn make_shared<T>(t: &Rc<RefCell<T>>) -> WkRef<T> {
 //
 // If you want mutable access maybe have a separate RefCell wrapping your data so that you can .get
 // on it when you need it from the graph later on
-pub trait NodeLike {
+pub trait DagreLike {
     // Associated struct which is the data in the node - needs the following keys
     type Unique: Eq + Hash + Ord + Debug;
     // A way to access this data - for consistency we may not want to mutate it after we add it!
@@ -50,31 +50,79 @@ pub trait NodeLike {
     fn label(&self) -> Box<[u8]>;
 }
 
+static mut NODECOUNT: usize = 0;
+
+pub enum RankKey {
+    Insertion,
+    Unique,
+}
+
+pub struct Rank<'a>(&'a RankKey);
+
+impl<'a> Default for Rank<'a> {
+    fn default() -> Self {
+        Self(&RankKey::Unique)
+    }
+}
+
+// Intrinsic information about the node
+pub struct DagreNodeIntrinsics {
+    insertion_order: usize,
+}
+
+impl Default for DagreNodeIntrinsics {
+    fn default() -> Self {
+        let mut nodenum: usize = 0;
+        unsafe {
+            NODECOUNT += 1;
+            nodenum = NODECOUNT;
+        }
+        Self { insertion_order: nodenum }
+    }
+}
+
+impl DagreNodeIntrinsics {
+
+    // Order of insertion
+    pub fn order(&self) -> usize {
+        self.insertion_order
+    }
+}
+
+
 // Node
 // why 'a:
 // references: https://users.rust-lang.org/t/why-this-impl-type-lifetime-may-not-live-long-enough/67855/2
 // Internal way of holding your supplied node as a Graph
 pub struct DagreNode<'a, I> where I: Eq + Hash + Ord + Debug {
     // Your data wrapped for the graph
-    pub data: Box<dyn NodeLike<Unique=I> + 'a>,
+    pub data: Box<dyn DagreLike<Unique=I> + 'a>,
     // TODO: Some other tracking metadata
     // Add node encodings that can be passed to a layout or renderer thing
+    pub intrinsics: DagreNodeIntrinsics,
+    pub rank_by: Rank<'a>,
 }
 
-impl<I: Hash + Eq + Debug + Ord> PartialOrd for Box<dyn NodeLike<Unique=I>> {
+impl<I: Hash + Eq + Debug + Ord> PartialOrd for Box<dyn DagreLike<Unique=I>> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         self.unique().partial_cmp(&other.unique())
     }
 }
 
-impl<I: Hash + Eq + Debug + Ord> PartialEq for Box<dyn NodeLike<Unique=I>> {
+impl<I: Hash + Eq + Debug + Ord> PartialEq for Box<dyn DagreLike<Unique=I>> {
     fn eq(&self, other: &Self) -> bool {
         self.unique().eq(&other.unique())
     }
 }
 
-impl<I: Hash + Eq + Debug + Ord> Eq for Box<dyn NodeLike<Unique=I>> {
+impl<I: Hash + Eq + Debug + Ord> Eq for Box<dyn DagreLike<Unique=I>> {
     fn assert_receiver_is_total_eq(&self) {}
+}
+
+impl<I: Hash + Eq + Debug + Ord> Ord for Box<dyn DagreLike<Unique=I>> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.unique().cmp(&other.unique())
+    }
 }
 
 ////////////////////////////////////////////////////////
@@ -136,12 +184,16 @@ impl<I: Hash + Eq + Ord + Debug> Display for DagreNode<'_, I> {
 
 // Impl Node
 impl<'a, I: Hash + Eq + Ord + Debug> DagreNode<'a, I> {
+
     // Create a new graph node from your trait implementation
-    pub fn create(subject: impl NodeLike<Unique=I> + 'a) -> Self {
+    pub fn create(subject: impl DagreLike<Unique=I> + 'a) -> Self {
         DagreNode {
-            data: Box::new(subject)
+            data: Box::new(subject),
+            intrinsics: DagreNodeIntrinsics::default(),
+            rank_by: Rank(&RankKey::Unique),
         }
     }
+
 }
 
 
@@ -238,19 +290,22 @@ impl<'a, I: Ord + Hash + Eq + Debug> Edges<'a,I> {
 
 }
 
+// TODO: find a fast way to unlink and carve a graph!
+
 // Type alias for our Graph based on BTreeMap
 pub type DaggerMapGraph<'a,I> = BTreeMap<StrongNode<'a,I>, Edges<'a,I>>;
 
 // MakeGraph interface for defining some graph operations
 pub trait DagreProtocol<'a, I: Ord + Debug + Hash> {
+
     // node adds a new member into the graph definition
-    fn node(&mut self, val: impl NodeLike<Unique=I> + 'a) -> WeakNode<'a,I>;
+    fn node(&mut self, val: impl DagreLike<Unique=I> + 'a) -> WeakNode<'a,I>;
     // edge adds a connection from one node to another if available - or does nothing otherwise
     fn unidirectional(&mut self, valfrom: &WeakNode<'a,I>, valto: &WeakNode<'a,I>);
     // edge adds a connection from one node to another if available - or does nothing otherwise
     fn bidirectional(&mut self, valfrom: &WeakNode<'a,I>, valto: &WeakNode<'a,I>);
     // Find by value (useful when reference isn't available)
-    fn find(&self, val: impl NodeLike<Unique=I> + 'a) -> Option<(WeakNode<'a,I>, &Edges<'a, I>)>;
+    fn find(&self, val: impl DagreLike<Unique=I> + 'a) -> Option<(WeakNode<'a,I>, &Edges<'a, I>)>;
     // Find by reference (useful if Weak pointer available)
     fn get_by(&self, val: &WeakNode<'a, I>) -> Option<&Edges<'a, I>>;
     // Remove a node
@@ -259,14 +314,14 @@ pub trait DagreProtocol<'a, I: Ord + Debug + Hash> {
     fn get_by_mut(&mut self, val: &WeakNode<'a, I>) -> Option<&mut Edges<'a, I>>;
     // edge deletion
     fn unlink(&mut self, from: &WeakNode<'a,I>, to: &WeakNode<'a,I>);
-    //fn induce(&self, nodes: Vec<StrongNode<'a, ...>>) -> Self;
+    // ScopedDaggerMapGraph
 }
 
 impl<'a, I: Ord + Debug + Display + Hash> DagreProtocol<'a, I> for DaggerMapGraph<'a, I> {
 
     // TODO: "tag" the weak references returned with something unique to this graph! so not just
     // any weak ref can be added if it doesn't exist
-    fn node(&mut self, data: impl NodeLike<Unique = I> + 'a) -> WeakNode<'a, I> {
+    fn node(&mut self, data: impl DagreLike<Unique = I> + 'a) -> WeakNode<'a, I> {
         let lab = data.label();
         let new_node = make_owned(DagreNode::create(data));
         // Check if already exists
@@ -321,7 +376,7 @@ impl<'a, I: Ord + Debug + Display + Hash> DagreProtocol<'a, I> for DaggerMapGrap
         }
     }
 
-    fn find(&self, val: impl NodeLike<Unique=I> + 'a) -> Option<(WeakNode<'a,I>, &Edges<'a, I>)> {
+    fn find(&self, val: impl DagreLike<Unique=I> + 'a) -> Option<(WeakNode<'a,I>, &Edges<'a, I>)> {
         let fnode = make_owned(DagreNode::create(val));
         if let Some((k, v)) = self.get_key_value(&fnode) {
             return Some((make_shared(k), v))
@@ -484,7 +539,7 @@ impl EventLogWriter for NopEventLogWriter {
 #[cfg(test)]
 mod tests {
 
-    use crate::NodeLike;
+    use crate::DagreLike;
 
     ////////////////////////////////
     //  New graph implementation  //
@@ -494,7 +549,7 @@ mod tests {
 
     pub struct TestNode(usize);
 
-    impl NodeLike for TestNode {
+    impl DagreLike for TestNode {
         type Unique = usize;
 
         fn unique(&self) -> Self::Unique {
